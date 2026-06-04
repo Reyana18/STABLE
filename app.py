@@ -28,9 +28,13 @@ engine = load_engine()
 dose_df = engine.dose
 
 # dropdown option lists pulled from the dataset
-drugs = sorted(dose_df["Generic"].astype(str).str.strip().unique())
-indications = sorted(dose_df["Indication"].astype(str).str.strip().unique())
-routes = sorted(r for r in dose_df["Route"].astype(str).str.strip().unique() if r and r != "nan")
+def clean_opts(col):
+    vals = dose_df[col].astype(str).str.strip().unique()
+    return sorted(v for v in vals if v and v.lower() != "nan")
+
+drugs = clean_opts("Generic")
+indications = clean_opts("Indication")
+routes = clean_opts("Route")
 
 # ---------------- header ----------------
 st.title("STABLE Verifier")
