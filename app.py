@@ -33,6 +33,20 @@ st.markdown(
                       padding: 3px 12px; font-size: 0.78rem; font-weight: 600;
                       margin-right: 6px; margin-bottom: 6px; }
       .stable-affil { color: #7A8896; font-size: 0.8rem; margin-bottom: 0.2rem; }
+      .stable-banner { display: flex; align-items: center; gap: 14px;
+                       background: linear-gradient(90deg, #0E2A40 0%, #0E5A8A 100%);
+                       border-radius: 14px; padding: 18px 22px; margin-bottom: 1.1rem; }
+      .stable-mark { font-size: 1.9rem; line-height: 1; }
+      .stable-word { color: #FFFFFF; font-weight: 800; font-size: 1.55rem;
+                     letter-spacing: -0.5px; }
+      .stable-word small { display: block; color: #Bcd6ea; color: #B8D2E8;
+                           font-weight: 500; font-size: 0.72rem; letter-spacing: 0.3px;
+                           margin-top: 2px; }
+      .stable-accent { height: 4px; width: 60px; background: #1FB6A6;
+                       border-radius: 4px; margin: 0.2rem 0 1rem; }
+      .stable-logorow { display: flex; align-items: center; gap: 18px;
+                        margin-bottom: 0.8rem; }
+      .stable-logorow img { height: 38px; opacity: 0.9; }
       div[data-testid="stForm"] { background: #FBFCFD; border: 1px solid #E3EAF1;
                                   border-radius: 14px; padding: 1.4rem 1.4rem 0.6rem; }
       .stButton button, .stForm button { border-radius: 10px; font-weight: 600; }
@@ -41,6 +55,12 @@ st.markdown(
       .v-block { background: #FDECEC; color: #8A1C1C; border: 1px solid #F3C9C9; }
       .v-warn  { background: #FFF6E5; color: #8A5A00; border: 1px solid #F3E0B0; }
       .v-ok    { background: #EAF7EE; color: #1C6B33; border: 1px solid #BFE6CB; }
+      .sec-head { display:flex; align-items:center; gap:8px; font-weight:700;
+                  font-size:0.9rem; color:#0E5A8A; text-transform:uppercase;
+                  letter-spacing:0.6px; margin:0.4rem 0 0.2rem;
+                  padding-bottom:6px; border-bottom:2px solid #D4E0EC; }
+      .sec-head .ico { font-size:1.1rem; }
+      .sec-gap { margin-top:1.1rem; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -95,34 +115,53 @@ st.markdown(
 
 
 # ---------------- input form ----------------
+def sec(icon, label, gap=True):
+    cls = "sec-head sec-gap" if gap else "sec-head"
+    st.markdown(f'<div class="{cls}"><span class="ico">{icon}</span>{label}</div>',
+                unsafe_allow_html=True)
+
+
 with st.form("rx"):
+    sec("🫀", "Drug & Indication", gap=False)
     c1, c2 = st.columns(2)
     with c1:
         drug = st.selectbox("Drug (generic)", drugs,
                             index=drugs.index("Metoprolol") if "Metoprolol" in drugs else 0)
-        age = st.number_input("Patient age (years)", min_value=0.0, max_value=120.0,
-                              value=55.0, step=1.0)
-        dose = st.number_input("Prescribed dose (mg)", min_value=0.0, value=50.0, step=1.0)
-        weight = st.number_input("Weight (kg) — for weight-based drugs", min_value=0.0,
-                                 value=0.0, step=1.0, help="Leave 0 if not applicable")
     with c2:
         indication = st.selectbox("Indication", indications,
                                   index=indications.index("Hypertension") if "Hypertension" in indications else 0)
+
+    sec("👤", "Patient")
+    c1, c2 = st.columns(2)
+    with c1:
+        age = st.number_input("Age (years)", min_value=0.0, max_value=120.0,
+                              value=55.0, step=1.0)
+        pregnant = st.checkbox("Patient is pregnant")
+    with c2:
+        weight = st.number_input("Weight (kg) — for weight-based drugs", min_value=0.0,
+                                 value=0.0, step=1.0, help="Leave 0 if not applicable")
+
+    sec("💊", "Dose & Route")
+    c1, c2 = st.columns(2)
+    with c1:
+        dose = st.number_input("Prescribed dose (mg)", min_value=0.0, value=50.0, step=1.0)
+        freq = st.number_input("Frequency (times per period)", min_value=0.0, value=1.0, step=1.0)
+    with c2:
         route = st.selectbox("Route", routes,
                              index=routes.index("Oral-PO") if "Oral-PO" in routes else 0)
-        freq = st.number_input("Frequency (times per period)", min_value=0.0, value=1.0, step=1.0)
         crcl = st.number_input("Creatinine clearance (mL/min) — 0 = not provided",
                                min_value=0.0, value=0.0, step=1.0)
 
-    c3, c4 = st.columns(2)
-    with c3:
+    sec("🧪", "Clinical Context")
+    c1, c2 = st.columns(2)
+    with c1:
         comorbidities = st.text_input("Comorbidities (comma-separated)",
                                       placeholder="e.g. asthma, renal stenosis")
-    with c4:
+    with c2:
         coprescribed = st.text_input("Co-prescribed drugs (comma-separated)",
                                      placeholder="e.g. verapamil")
-    pregnant = st.checkbox("Patient is pregnant")
 
+    st.markdown('<div class="sec-gap"></div>', unsafe_allow_html=True)
     submitted = st.form_submit_button("Verify prescription", use_container_width=True)
 
 
