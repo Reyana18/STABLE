@@ -30,7 +30,7 @@ dose_df = engine.dose
 # dropdown option lists pulled from the dataset
 def clean_opts(col):
     vals = dose_df[col].astype(str).str.strip().unique()
-    return sorted(v for v in vals if v and v.lower() != "nan")
+    return sorted(str(v) for v in vals if str(v).strip() and str(v).strip().lower() != "nan")
 
 drugs = clean_opts("Generic")
 indications = clean_opts("Indication")
