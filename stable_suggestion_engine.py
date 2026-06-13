@@ -134,9 +134,12 @@ class STABLESuggestionEngine:
     def get_drugs(self):
         return sorted(self.dose["Generic"].astype(str).str.strip().unique())
 
-    def get_routes(self):
-        return sorted(r for r in self.dose["Route"].astype(str).str.strip().unique()
-                       if r and r.lower() != "nan")
+   def get_routes(self):
+    col = self.dose["Route"]
+    if isinstance(col, pd.DataFrame):
+        col = col.iloc[:, 0]
+    col = col.astype(str).str.strip()
+    return sorted(r for r in col.unique() if r and r.lower() != "nan")
 
     # ── row retrieval ────────────────────────────────────────────────────
     def _lookup(self, drug, indication, age, route):
