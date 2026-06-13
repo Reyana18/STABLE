@@ -99,10 +99,12 @@ class STABLESuggestionEngine:
         dose_sheet = dose_sheet or xl.sheet_names[0]
         renal_sheet = renal_sheet or (xl.sheet_names[1] if len(xl.sheet_names) > 1 else xl.sheet_names[0])
         self.dose = pd.read_excel(path, sheet_name=dose_sheet)
-        self.renal = pd.read_excel(path, sheet_name=renal_sheet)
-        for df in (self.dose, self.renal):
-            for c in df.select_dtypes("object").columns:
-                df[c] = df[c].astype(str).str.strip()
+self.renal = pd.read_excel(path, sheet_name=renal_sheet)
+self.dose = self.dose.loc[:, ~self.dose.columns.duplicated()]
+self.renal = self.renal.loc[:, ~self.renal.columns.duplicated()]
+for df in (self.dose, self.renal):
+    for c in df.select_dtypes("object").columns:
+        df[c] = df[c].astype(str).str.strip()
 
     # ── helpers ──────────────────────────────────────────────────────────
     @staticmethod
