@@ -1,6 +1,21 @@
 """
 STABLE Suggestion Engine
 Context-aware dose suggestion against the STABLE cardiovascular dataset.
+
+Instead of blocking or warning, this engine surfaces all documented dosing
+options for a given drug-indication-patient combination, annotated with
+safety tags drawn from the same dataset rows.
+
+Usage:
+    engine = STABLESuggestionEngine("STABLE_age_ranged.xlsx")
+    result = engine.suggest(
+        drug="Metoprolol", indication="Hypertension",
+        age_years=70, weight_kg=80, route="Oral-PO",
+        crcl=45, comorbidities=["diabetes"], coprescribed=["verapamil"],
+        pregnant=False
+    )
+    for card in result.cards:
+        print(card)
 """
 
 import pandas as pd
@@ -9,15 +24,16 @@ from dataclasses import dataclass, field
 from typing import List, Optional
 
 
-DANGER = "DANGER"
-CAUTION = "CAUTION"
-NOTE = "NOTE"
+# ── safety tag levels (annotations, not gates) ──────────────────────────
+DANGER = "DANGER"       # absolute contraindication / pregnancy-prohibited
+CAUTION = "CAUTION"     # DDI, comorbidity interaction, renal flag
+NOTE = "NOTE"           # informational
 
 
 @dataclass
 class SafetyTag:
-    level: str
-    source: str
+    level: str      # DANGER | CAUTION | NOTE
+    source: str     # which check produced it
     message: str
 
     def __repr__(self):
@@ -26,8 +42,9 @@ class SafetyTag:
 
 @dataclass
 class DoseCard:
-    phase: str
-    dose_display: str
+    """One suggested dosing option."""
+    phase: str                          # e.g. Initial, Maintenance, Maximum
+    dose_display: str                   # human-readable dose string
     dose_min_mg: Optional[float] = None
     dose_max_mg: Optional[float] = None
     frequency: str = ""
@@ -62,14 +79,8 @@ class SuggestionResult:
     message: str = ""
 
 
-def _to_series(obj):
-    """Helper: if obj is a DataFrame (duplicate column), take first column."""
-    if isinstance(obj, pd.DataFrame):
-        return obj.iloc[:, 0]
-    return obj
-
-
 class STABLESuggestionEngine:
+    # clinical phase ordering
     PHASE_ORDER = [
         "loading", "initial", "titrate", "regular", "maintenance",
         "target", "maximum", "repeat", "diagnostic", "test",
@@ -87,24 +98,19 @@ class STABLESuggestionEngine:
                 dose_sheet = s
         dose_sheet = dose_sheet or xl.sheet_names[0]
         renal_sheet = renal_sheet or (xl.sheet_names[1] if len(xl.sheet_names) > 1 else xl.sheet_names[0])
-
         self.dose = pd.read_excel(path, sheet_name=dose_sheet)
         self.renal = pd.read_excel(path, sheet_name=renal_sheet)
-
-        # drop duplicate-named columns (fixes duplicate "Route" etc.)
-        self.dose = self.dose.loc[:, ~self.dose.columns.duplicated()]
-        self.renal = self.renal.loc[:, ~self.renal.columns.duplicated()]
-
         for df in (self.dose, self.renal):
-            for c in df.select_dtypes("object").columns:
-                df[c] = df[c].astype(str).str.strip()
+            for c in df.columns:
+                if df[c].dtype == object or str(df[c].dtype) == "string":
+                    df[c] = df[c].astype(str).str.strip()
 
     # ── helpers ──────────────────────────────────────────────────────────
     @staticmethod
     def _num(v):
         try:
             f = float(v)
-            if f != f:
+            if f != f:  # NaN check
                 return None
             return f
         except (ValueError, TypeError):
@@ -112,8 +118,6 @@ class STABLESuggestionEngine:
 
     @staticmethod
     def _safe(v):
-        if isinstance(v, pd.Series):
-            v = v.iloc[0] if len(v) else None
         s = str(v).strip()
         return "" if s.lower() in ("nan", "none", "") else s
 
@@ -133,48 +137,44 @@ class STABLESuggestionEngine:
         return len(self.PHASE_ORDER)
 
     def get_drug_indications(self, drug):
+        """Return all indications available for a drug."""
         d = self.dose
-        gen = _to_series(d["Generic"]).astype(str).str.lower()
-        ind = _to_series(d["Indication"]).astype(str).str.strip()
-        mask = gen == drug.lower()
-        vals = ind[mask].unique()
-        return sorted(v for v in vals if v and v.lower() != "nan")
+        mask = d["Generic"].astype(str).str.lower() == drug.lower()
+        vals = d.loc[mask, "Indication"].dropna().astype(str).str.strip().unique()
+        return sorted(v for v in vals if v and v.lower() not in ("nan", "none", ""))
 
     def get_drugs(self):
-        col = _to_series(self.dose["Generic"]).astype(str).str.strip()
-        return sorted(col.unique())
+        vals = self.dose["Generic"].dropna().astype(str).str.strip().unique()
+        return sorted(v for v in vals if v and v.lower() not in ("nan", "none", ""))
 
     def get_routes(self):
-        col = _to_series(self.dose["Route"]).astype(str).str.strip()
-        return sorted(r for r in col.unique() if r and r.lower() != "nan")
+        vals = self.dose["Route"].dropna().astype(str).str.strip().unique()
+        return sorted(v for v in vals if v and v.lower() not in ("nan", "none", ""))
 
     # ── row retrieval ────────────────────────────────────────────────────
     def _lookup(self, drug, indication, age, route):
         d = self.dose
-        gen = _to_series(d["Generic"]).astype(str).str.lower()
-        drug_mask = gen == drug.lower()
-
+        drug_mask = d["Generic"].astype(str).str.lower() == drug.lower()
         ind_l = indication.lower() if indication else ""
         if ind_l:
-            ind_series = _to_series(d["Indication"]).astype(str).str.lower()
+            ind_series = d["Indication"].astype(str).str.lower()
             first = re.escape(ind_l.split()[0]) if ind_l.split() else re.escape(ind_l)
             ind_mask = ind_series.str.contains(first, na=False, regex=True) | ind_series.isin([ind_l])
             m = drug_mask & ind_mask
         else:
             m = drug_mask
         cand = d[m]
-
         if route:
-            route_col = _to_series(cand["Route"]).astype(str).str.lower()
-            r = cand[route_col.str.contains(route.lower()[:2], na=False)]
+            r = cand[cand["Route"].str.lower().str.contains(route.lower()[:2], na=False)]
             if len(r) > 0:
                 cand = r
-
         cand = cand[cand.apply(lambda x: self._age_match(x, age), axis=1)]
         return cand
 
     # ── dose extraction ──────────────────────────────────────────────────
     def _extract_dose(self, row, weight_kg):
+        """Extract dose range from a single row, return (min, max, display, weight_based)."""
+        # fixed mg
         single = self._num(row.get("Direct Dose mg(Single Strength)"))
         lo_m = self._num(row.get("Min Direct Dose mg(Multiple Strength)"))
         hi_m = self._num(row.get("Max  Direct Dose mg(Multiple Strength)"))
@@ -188,6 +188,7 @@ class STABLESuggestionEngine:
         if hi_m is not None:
             return hi_m, hi_m, f"{hi_m} mg", False
 
+        # weight-based mg/kg
         ws = self._num(row.get("Dose Per Weight mg(Single Strength)"))
         wlo = self._num(row.get("Dose Per Weight mg(Min Multiple Strength)"))
         whi = self._num(row.get("Dose Per Weight mg(Max Multiple Strength)"))
@@ -207,6 +208,7 @@ class STABLESuggestionEngine:
                     disp = f"{per_lo} mg/kg"
                 return None, None, disp, True
 
+        # IU
         iu = self._num(row.get("Direct Dose(IU)"))
         iu_w = self._num(row.get("Dose Per weight(IU)"))
         if iu is not None:
@@ -217,6 +219,7 @@ class STABLESuggestionEngine:
                 return val, val, f"{iu_w} IU/kg → {val} IU for {weight_kg} kg", True
             return None, None, f"{iu_w} IU/kg", True
 
+        # unit-based
         us = self._num(row.get("Single Dose(Unit)"))
         ulo = self._num(row.get("Min Single Dose(Unit)"))
         uhi = self._num(row.get("Max Single Dose(Unit)"))
@@ -231,7 +234,7 @@ class STABLESuggestionEngine:
 
     def _extract_frequency(self, row):
         sf = self._safe(row.get("Single Frequency"))
-        mnf = self._safe(row.get("Min Frequency "))
+        mnf = self._safe(row.get("Min Frequency "))  # note trailing space in real col
         mxf = self._safe(row.get("Max Frequency"))
         timing = self._safe(row.get("Timing"))
         parts = []
@@ -245,11 +248,188 @@ class STABLESuggestionEngine:
 
     # ── safety annotations ───────────────────────────────────────────────
     def _annotate_drug_level(self, rows, comorbidities, coprescribed, pregnant):
+        """Tags that apply to the drug as a whole (not per-phase)."""
         tags = []
+        # contraindication
         text_ci = " ".join(self._safe(r.get("Contraindiction")) for _, r in rows.iterrows()).lower()
         for c in comorbidities:
             if c.lower() in text_ci:
                 tags.append(SafetyTag(DANGER, "contraindication",
                                       f"'{c}' listed as contraindication for this drug"))
+        # pregnancy
         if pregnant:
             cats = {self._safe(r.get("Pregnancy Category")).upper() for _, r in rows.iterrows()}
+            bad = cats & {"D", "Z", "X"}
+            if bad:
+                tags.append(SafetyTag(DANGER, "pregnancy",
+                                      f"pregnancy category {bad} — contraindicated in pregnancy"))
+            elif cats - {"", "NAN"}:
+                tags.append(SafetyTag(CAUTION, "pregnancy",
+                                      f"pregnancy category {cats - {'','NAN'}} — use with caution"))
+        # DDI
+        text_ddi = " ".join(self._safe(r.get("DDI")) for _, r in rows.iterrows()).lower()
+        for d in coprescribed:
+            if d.lower() in text_ddi:
+                tags.append(SafetyTag(CAUTION, "drug interaction",
+                                      f"interaction flagged with co-prescribed '{d}'"))
+        # disease interaction
+        text_di = " ".join(self._safe(r.get("Disease Interactions")) for _, r in rows.iterrows()).lower()
+        for c in comorbidities:
+            if c.lower() in text_di:
+                tags.append(SafetyTag(CAUTION, "comorbidity",
+                                      f"'{c}' listed as disease interaction"))
+        return tags
+
+    def _renal_cards(self, drug, crcl, indication):
+        """Pull Module 2 renal-adjusted dose cards if CrCl is low."""
+        if crcl is None or crcl >= 90:
+            return []
+        r = self.renal[self.renal["Generic"].str.lower() == drug.lower()]
+        if len(r) == 0:
+            return []
+        # filter by CrCl bracket
+        matched = []
+        for _, row in r.iterrows():
+            mn = self._num(row.get("Min CrCl"))
+            mx = self._num(row.get("Max CrCl"))
+            if mn is not None and mx is not None:
+                if mn <= crcl <= mx:
+                    matched.append(row)
+            elif mn is not None and crcl >= mn:
+                matched.append(row)
+            elif mx is not None and crcl <= mx:
+                matched.append(row)
+        cards = []
+        for row in matched:
+            # dose
+            single = self._num(row.get("Direct Dose mg (Single Strength)"))
+            lo_m = self._num(row.get("Min Direct Dose (Multiple Strength)"))
+            hi_m = self._num(row.get("Max Direct Dose (Multiple Strength)"))
+            if single is not None:
+                disp = f"{single} mg (renal-adjusted)"
+                d_lo, d_hi = single, single
+            elif lo_m is not None or hi_m is not None:
+                lo_m = lo_m or hi_m
+                hi_m = hi_m or lo_m
+                disp = f"{lo_m}–{hi_m} mg (renal-adjusted)"
+                d_lo, d_hi = lo_m, hi_m
+            else:
+                disp = "see instruction (renal-adjusted)"
+                d_lo = d_hi = None
+            # frequency
+            sf = self._safe(row.get("Single Frequency"))
+            mnf = self._safe(row.get("Min Frequency (Multiple)"))
+            mxf = self._safe(row.get("Max Frequency (Multiple)"))
+            fu = self._safe(row.get("Frequency Unit"))
+            freq_parts = []
+            if sf:
+                freq_parts.append(sf)
+            elif mnf or mxf:
+                freq_parts.append(f"{mnf or '?'}–{mxf or '?'}")
+            if fu:
+                freq_parts.append(f"per {fu.lower()}")
+            freq_str = " ".join(freq_parts)
+
+            mn_v = self._num(row.get("Min CrCl"))
+            mx_v = self._num(row.get("Max CrCl"))
+            bracket = f"CrCl {mn_v or '?'}–{mx_v or '?'} mL/min"
+
+            card = DoseCard(
+                phase=f"Renal ({bracket})",
+                dose_display=disp,
+                dose_min_mg=d_lo, dose_max_mg=d_hi,
+                frequency=freq_str,
+                administration=self._safe(row.get("Administration")),
+                instruction=self._safe(row.get("Instruction")),
+                duration=self._safe(row.get("Duration")),
+                renal_adjusted=True,
+                tags=[SafetyTag(NOTE, "renal", bracket)]
+            )
+            cards.append(card)
+        return cards
+
+    # ── main entry point ─────────────────────────────────────────────────
+    def suggest(self, drug, indication, age_years, weight_kg=None,
+                route=None, crcl=None,
+                comorbidities=None, coprescribed=None, pregnant=False):
+        comorbidities = comorbidities or []
+        coprescribed = coprescribed or []
+        result = SuggestionResult(drug=drug, indication=indication, patient_summary="")
+
+        # patient summary line
+        parts = [f"age {age_years}y"]
+        if weight_kg:
+            parts.append(f"{weight_kg} kg")
+        if crcl is not None:
+            parts.append(f"CrCl {crcl}")
+        if pregnant:
+            parts.append("pregnant")
+        result.patient_summary = ", ".join(parts)
+
+        # available indications for this drug
+        result.available_indications = self.get_drug_indications(drug)
+
+        # retrieve matching rows
+        rows = self._lookup(drug, indication, age_years, route)
+
+        if len(rows) == 0:
+            if result.available_indications:
+                result.message = (f"No documented dosing for {drug} in '{indication}' "
+                                  f"for this age/route. This drug covers: "
+                                  f"{', '.join(result.available_indications[:8])}.")
+            else:
+                result.message = f"No STABLE data found for '{drug}'."
+            # still check renal
+            renal_cards = self._renal_cards(drug, crcl, indication)
+            result.cards.extend(renal_cards)
+            return result
+
+        # drug-level safety annotations
+        result.drug_level_tags = self._annotate_drug_level(
+            rows, comorbidities, coprescribed, pregnant)
+
+        # build one DoseCard per row (each row = one dose phase)
+        for _, row in rows.iterrows():
+            phase = self._safe(row.get("Type of Doses")) or "Unspecified"
+            d_lo, d_hi, disp, wb = self._extract_dose(row, weight_kg)
+            freq = self._extract_frequency(row)
+            card = DoseCard(
+                phase=phase,
+                dose_display=disp,
+                dose_min_mg=d_lo, dose_max_mg=d_hi,
+                frequency=freq,
+                timing=self._safe(row.get("Timing")),
+                route=self._safe(row.get("Route")),
+                duration=self._safe(row.get("Duration")),
+                administration=self._safe(row.get("Administration")),
+                instruction=self._safe(row.get("Instruction")),
+                weight_based=wb,
+            )
+            result.cards.append(card)
+
+        # sort cards by clinical phase order
+        result.cards.sort(key=lambda c: self._phase_sort_key(c.phase))
+
+        # renal cards if applicable
+        renal_cards = self._renal_cards(drug, crcl, indication)
+        result.cards.extend(renal_cards)
+
+        if not result.cards:
+            result.message = "No dose options resolved for this combination."
+
+        return result
+
+
+if __name__ == "__main__":
+    eng = STABLESuggestionEngine("STABLE_age_ranged.xlsx")
+    print("=== Metoprolol / Hypertension / age 70 / CrCl 45 ===")
+    r = eng.suggest("Metoprolol", "Hypertension", 70, weight_kg=80,
+                     route="Oral-PO", crcl=45,
+                     comorbidities=["diabetes"], coprescribed=["verapamil"])
+    print("Patient:", r.patient_summary)
+    if r.drug_level_tags:
+        print("Drug-level tags:")
+        for t in r.drug_level_tags:
+            print("  ", t)
+    for c in r.cards:
+        print(c)
